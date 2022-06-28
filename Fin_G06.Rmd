@@ -1,0 +1,657 @@
+---
+title: "Group 6 Finance Report"
+author: Yang JiAn (A0233196A), Yuen Jia Jie (A0233224U), Diao Zhuoxuan (A0239446W), Huang
+  Renzhou (A0239579H), Kong Heyi (A0238046E)
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output:
+   beamer_presentation: default
+header-includes: 
+  - \pgfdeclareimage[height=1cm]{logo}{SoC-Logo-V.jpg}
+  - \logo{\pgfuseimage{logo}}
+---
+
+
+```{r loading of packages, include=FALSE}
+
+knitr::opts_chunk$set(echo = FALSE, warning=FALSE, message=FALSE, comment="")
+library(XML)
+library(dplyr)
+library(knitr)
+library(timetk)
+library(readxl)
+library(plotly)
+library(GGally)
+library(plotrix)
+library(ggiraph)
+library(stringr)
+library(ggplot2)
+library(quantmod)
+library(tidyverse)
+library(tidyquant)
+library(kableExtra)
+library(fPortfolio)
+library(ggcorrplot)
+library(PortfolioAnalytics)
+library(PerformanceAnalytics)
+```
+
+
+```{r loading of given data, include=FALSE}
+givenReturn = read_excel('ETFfxReturns.xlsx', sheet = "Returns")
+
+ETFs = c("AGG", "SCHP", "VCSH", "BNDX","VWOB","1306.T", "VOO",  "VSS", "VGK", "VWO","1343.T","VNQ", "VNQI", "IAU", "BCI")
+
+
+# Get ETF prices
+etf_returns <- givenReturn %>% 
+  select(-mkt, -rf, -`VO US Equity`)
+
+# Yearly return
+return_table <- NULL
+for (i in 2:16){
+  temp <- xts::xts(etf_returns[,i], order.by = as.Date(etf_returns$x), dateFormat="POSIXct")
+  temp <- apply.yearly(temp,sum)
+  return_table <- cbind(return_table, temp)
+}
+colnames(return_table) <- ETFs
+return <-  return_table
+
+# Monthly return
+return_table_2 <- NULL
+for (i in 2:16){
+  temp <- xts::xts(etf_returns[,i], order.by = as.Date(etf_returns$x), dateFormat="POSIXct")
+  temp <- apply.monthly(temp,sum)
+  return_table_2 <- cbind(return_table_2, temp)
+}
+colnames(return_table_2) <- ETFs
+return_monthly <-  return_table_2
+
+# Cov and Cor of return
+cov <- cov(return,use="pairwise.complete.obs")
+cor <- cor(return,use="pairwise.complete.obs")
+
+
+mkt <- givenReturn %>% 
+  select(x, mkt)
+mkt_ts <- xts::xts(mkt[,-1], order.by = as.Date(mkt$x), dateFormat="POSIXct")
+R_mkt <- apply.yearly(mkt_ts,sum)
+
+risk_free <- givenReturn %>% 
+  select(x, rf)
+rf_ts <- xts::xts(risk_free[,-1], order.by = as.Date(risk_free$x), dateFormat="POSIXct")
+R_rf<- apply.yearly(rf_ts,sum)
+```
+
+
+```{r tabulation of data, include=FALSE}
+#CAPM Regression
+capm_alpha <- c()
+capm_beta <- c()
+for(i in 1:ncol(return)) {
+  y <- return[ , i]
+  x <- R_mkt$mkt
+  capm_temp <- lm(na.omit(merge(y, x))[,1]~na.omit(merge(y, x))[,2]) 
+  capm_alpha <- c(capm_alpha, summary(capm_temp)$coefficients[1]) 
+  capm_beta <- c(capm_beta, summary(capm_temp)$coefficients[2])
+}
+capm_coeff <- data.frame(capm_alpha, capm_beta)
+rownames(capm_coeff) <- ETFs
+
+historical_mu <- sapply(na.omit(return),mean)
+historical_sd <- sapply(na.omit(return),sd)
+hist <- cbind(historical_mu,historical_sd)
+rownames(hist) <- ETFs
+
+Rf = 0.01
+Rm = colMeans(R_mkt[,1])
+capm_mu <- Rf + capm_coeff$capm_beta*Rm
+capm <- cbind(capm_mu)
+rownames(capm) <- ETFs
+
+agg_mu <- (2/3)*capm[,"capm_mu"] + (1/3)*hist[,"historical_mu"] 
+agg_mu <- as.numeric(agg_mu)
+
+tempSpecification <- portfolioSpec()
+setEstimator(tempSpecification) <- function (x, spec = NULL, ...) {
+  temp = as.matrix(x)
+  list(mu = agg_mu, Sigma = cov)} 
+setNFrontierPoints(tempSpecification) <- 200
+
+finalPortfolio <- portfolioFrontier(as.timeSeries(return), tempSpecification, constraints = "LongOnly")
+weighted_matrix <- getPortfolio(finalPortfolio)$weights
+colnames(weighted_matrix) <- ETFs
+info_matrix <- cbind(weighted_matrix, getPortfolio(finalPortfolio)$targetReturn, getPortfolio(finalPortfolio)$targetRisk)
+```
+
+## ETF Summary (as of 15/04/22) - 1/2
+
+```{r ETF Summary, fig.width=5}
+ETFs = c("AGG", "SCHP", "VCSH", "BNDX","VWOB", "1306.T","VOO",  "VSS", "VGK", "VWO","1343.T","VNQ", "VNQI", "IAU", "BCI")
+
+mainTable = NA
+for (code in ETFs){
+  if (code =="1343.T"){
+    temp <- c("3.4B", "3.4B","-", "3.10%","-2.61%","-","0.12%","2008-09-17")
+    mainTable <- rbind(mainTable, temp)
+  }else if (code =="1306.T"){
+    temp <- c("79.41B", "79.41B","-", "1.61%","-4.07%","-","0.05%","2001-07-11")
+    mainTable <- rbind(mainTable, temp)
+  }else {
+    url <- paste('https://finance.yahoo.com/quote/',code,'?p=',code,sep="")
+    temp <- readHTMLTable(getNodeSet(htmlTreeParse(readLines(url, warn= FALSE), useInternalNodes = TRUE, asText = TRUE), "//table")[[2]])
+    mainTable <- rbind(mainTable, temp$V2)
+    colnames(mainTable) <- temp$V1
+  }
+}
+mainTable <- mainTable[-1,]
+rownames(mainTable) <- ETFs
+mainTable <- as.data.frame(mainTable)
+
+dropped_column <- c("PE Ratio (TTM)", "Beta (5Y Monthly)","NAV","Yield (%)")
+mainTable <- mainTable[ , !(names(mainTable) %in% dropped_column)]
+
+currency <- c("USD", "USD", "USD", "USD","USD", "JPY", "USD",  "USD", "USD", "USD", "JPY","USD", "USD", "USD", "USD")
+
+Asset_Type <- c("US Intemediate Bond", "US TIPS ETF", "US Short Term Bond", "International Bond Index Fund","Government Bond", "Exchange Traded Fund","S&P500",  "All-World ex-US Small-Cap Index", "Europe Index Fund", "Emerging Markets Index Fund", "JP REIT","Real Estate Index Fund ", "ex-U.S. Real Estate Index Fund", "Gold", "Commodity")
+
+Asset_Class <- c("USIGFI", "TIPFI", "USSTCorpFI", "GFI","EMFI2", "JEQ","USEQ",  "WexUSsEQ", "EUREQ", "EMEQ", "JREIT","USREIT ", "GREIT", "GOLD", "COMMO")
+
+calculated_beta <- cbind(rownames(capm_coeff), data.frame(capm_coeff, row.names=NULL))
+calculated_beta <- calculated_beta[calculated_beta$`rownames(capm_coeff)` %in% ETFs, ]
+mainTable <- cbind(currency,Asset_Class,mainTable, round(calculated_beta$capm_beta,3))
+names(mainTable)[2] <- paste("Asset Class")
+names(mainTable)[7] <- paste("Inspection date")
+names(mainTable)[8] <- paste("Beta")
+
+fixed_income <- mainTable[1:5,]
+equity <- mainTable[6:10,]
+REIT <- mainTable[11:13,]
+Gold_Com <- mainTable[14:15,]
+```
+
+### Fixed income 
+```{r fixed income}
+kable(fixed_income) %>% kable_styling(latex_options = "scale_down")
+```
+
+
+### Real Estate Investment Trust
+```{r REIT}
+kable(REIT) %>% kable_styling(font_size = 5,latex_options="scale_down")
+```
+
+
+## ETF Summary (as of 15/04/22) - 2/2
+### Equity
+```{r equity}
+kable(equity) %>% kable_styling(font_size = 5, latex_options = "scale_down")
+```
+
+### Gold and Commodity
+```{r Gold_Com}
+kable(Gold_Com) %>% kable_styling(font_size = 5,latex_options="scale_down")
+```
+
+
+## Efficient Frontier
+
+```{r eff frontier}
+tailoredFrontierPlot(object=finalPortfolio, return="mu", risk="Sigma", sharpeRatio = FALSE)
+```
+
+## Low Risk Portfolio
+
+```{r portfolio preparation}
+FixIncome_code = c("AGG", "SCHP", "VCSH", "BNDX","VWOB")
+REIT_code = c("1343.T","VNQ", "VNQI")
+Equity_code = c("1306.T","VOO",  "VSS", "VGK", "VWO")
+Comodity_code = c("IAU", "BCI")
+
+exposures <- function(p) {
+  USD = 0
+  JPY = 0
+  for(i in 1:length(ETFs)) {
+    if (weighted_matrix[p,ETFs[i]] > 0) {
+      if (ETFs[i] == "1343.T" || ETFs[i] == "1306.T") {
+        JPY = JPY + round(weighted_matrix[p,ETFs[i]],4)
+      } else {
+        USD = USD + round(weighted_matrix[p,ETFs[i]],4)
+      }
+    }
+  }
+  
+  FixIncomeCount = 0
+  REITCount = 0
+  EquityCount = 0
+  ComodityCount = 0 
+  for(i in 1:length(ETFs)) {
+    if (weighted_matrix[p,ETFs[i]] > 0) {
+      if (ETFs[i] %in% FixIncome_code) {
+        FixIncomeCount = FixIncomeCount + round(weighted_matrix[p,ETFs[i]],4)
+      } else if (ETFs[i] %in% REIT_code) {
+        REITCount = REITCount + round(weighted_matrix[p,ETFs[i]],4)
+      } else if (ETFs[i] %in% Equity_code) {
+        EquityCount = EquityCount + round(weighted_matrix[p,ETFs[i]],4)
+      } else {
+        ComodityCount = ComodityCount + round(weighted_matrix[p,ETFs[i]],4)
+      }
+    }
+  }
+  output <- data.frame("USD"=c(paste(round(USD*100,2),"%")),
+                    "JPY"=c(paste(round(JPY*100,2),"%")),
+                    "Fixed Income"=c(paste(round(FixIncomeCount*100,2),"%")),
+                    "REIT"=c(paste(round(REITCount*100,2),"%")),
+                    "Equity"=c(paste(round(EquityCount*100,2),"%")),
+                    "Comodity "=c(paste(round(ComodityCount*100,2),"%")))
+  return(output)
+}
+
+l = 40
+m = 90
+h = 120
+e = 201
+
+#BackTest Yearly
+backtestReturns <- return
+backtestReturns$low <- 0
+backtestReturns$mid <- 0
+backtestReturns$high <- 0
+backtestReturns$equal <- 0
+
+colnames(backtestReturns) <- c(ETFs,c("low", "mid", "high", "equal"))
+
+for (i in ETFs) {
+  backtestReturns[,"low"] <- backtestReturns[,"low"] + backtestReturns[,i]*info_matrix[l,i]
+   backtestReturns[,"mid"] <- backtestReturns[,"mid"] + backtestReturns[,i]*info_matrix[m,i]
+   backtestReturns[,"high"] <- backtestReturns[,"high"] + backtestReturns[,i]*info_matrix[h,i]
+   backtestReturns[,"equal"] <- backtestReturns[,"equal"] + backtestReturns[,i] * 1/length(ETFs)
+}
+
+backtestReturns <- na.omit(backtestReturns)
+backtest.data <- data.frame(
+   date <- as.yearmon(seq(as.Date("2001-10-31"), as.Date("2022-10-31"), by = "year")),
+   low <- cumsum(backtestReturns[,"low"]),
+   mid <- cumsum(backtestReturns[,"mid"]),
+   high <- cumsum(backtestReturns[,"high"]),
+   equal <- cumsum(backtestReturns[,"equal"])
+)
+
+#BackTest monthly
+backtestReturns_monthly <- return_monthly
+backtestReturns_monthly$low <- 0
+backtestReturns_monthly$mid <- 0
+backtestReturns_monthly$high <- 0
+backtestReturns_monthly$equal <- 0
+
+colnames(backtestReturns_monthly) <- c(ETFs,c("low", "mid", "high", "equal"))
+
+for (i in ETFs) {
+  backtestReturns_monthly[,"low"] <- backtestReturns_monthly[,"low"] + backtestReturns_monthly[,i]*info_matrix[l,i]
+   backtestReturns_monthly[,"mid"] <- backtestReturns_monthly[,"mid"] + backtestReturns_monthly[,i]*info_matrix[m,i]
+   backtestReturns_monthly[,"high"] <- backtestReturns_monthly[,"high"] + backtestReturns_monthly[,i]*info_matrix[h,i]
+    backtestReturns_monthly[,"equal"] <- backtestReturns_monthly[,"equal"] + 
+      backtestReturns_monthly[,i] * 1/length(ETFs)
+}
+
+backtestReturns_monthly <- na.omit(backtestReturns_monthly)
+backtest.data_monthly <- data.frame(
+   date <- as.yearmon(seq(as.Date("2001-10-31"), as.Date("2022-04-18"), by = "month")),
+   low <- cumsum(backtestReturns_monthly[,"low"]),
+   mid <- cumsum(backtestReturns_monthly[,"mid"]),
+   high <- cumsum(backtestReturns_monthly[,"high"]),
+   equal <- cumsum(backtestReturns_monthly[,"equal"])
+)
+```
+
+
+```{r low risk pie, fig.width=5,fig.height=2}
+pie_lowRisk <- function(p) {
+  port <- data.frame(
+    etf = ETFs,
+    returns = round(weighted_matrix[p,]*100,2)
+  )
+  port <- arrange(port, desc(returns))
+  slice <- c()
+  for(i in 1:nrow(port)) {
+    if (port[i,"returns"] == 0) {
+      slice <- c(slice,i)
+    }
+  }
+  port <- slice(port, -slice)
+  port$etf <- paste(port$etf, "+", port$returns, "%")
+  port$etf <- factor(port$etf, levels = rev(as.character(port$etf)))
+  
+  blank_theme <- theme_minimal() + 
+    theme(
+      axis.title.x = element_blank(),
+      axis.title.y = element_blank(),
+      panel.border = element_blank(),
+      panel.grid=element_blank(),
+      axis.ticks = element_blank(),
+      plot.title=element_text(size=14, face="bold"),
+      axis.text.x=element_blank()
+    )
+  chart <- ggplot(port, aes("", returns, fill = etf)) +
+    geom_bar(width = 1, size = 0.5, color = "black", stat = "identity") +
+    coord_polar("y") +
+    blank_theme +
+    guides(fill=guide_legend("Composition", reverse=T)) +
+    scale_fill_manual(values=c("#ccffcc","#99ff99","#33ff33","#00cc00","#009900","#006600","#003300"))
+  return(chart)
+}
+
+
+pie_lowRisk(l)
+table.low <- as.data.frame(cbind(paste(round(info_matrix[l,"mu"]*100,2), "%"),
+                                 paste(round(info_matrix[l,"Cov"]*100,2), "%"),
+                                 signif((info_matrix[l,"mu"]-Rf)/info_matrix[l,"Cov"],3)))
+colnames(table.low) <- c("Returns","Risks","Sharpe Ratio")
+rownames(table.low) <- NULL
+
+kable(list(table.low, exposures(l)))
+```
+
+## Histogram of Low Risk Yearly Return
+```{r low risk return histo}
+low_whole <- window(backtestReturns$low)
+names(low_whole) <- "Low Risk Yearly Return Distribution"
+low_whole_percentage = low_whole*100
+chart.Histogram(low_whole_percentage, methods = c("add.normal","add.density"), breaks = seq(-5,15,1),xlim=c(-5,15),ylim=c(0,0.25),xlab = "returns in %")
+```
+
+## Mid Risk Portfolio
+
+```{r mid risk pie, fig.width=5,fig.height=2}
+pie_midRisk <- function(p) {
+  port <- data.frame(
+    etf = ETFs,
+    returns = round(weighted_matrix[p,]*100,2)
+  )
+  port <- arrange(port, desc(returns))
+  slice <- c()
+  for(i in 1:nrow(port)) {
+    if (port[i,"returns"] == 0) {
+      slice <- c(slice,i)
+    }
+  }
+  port <- slice(port, -slice)
+  port$etf <- paste(port$etf, "+", port$returns, "%")
+  port$etf <- factor(port$etf, levels = rev(as.character(port$etf)))
+  
+  blank_theme <- theme_minimal() + 
+    theme(
+      axis.title.x = element_blank(),
+      axis.title.y = element_blank(),
+      panel.border = element_blank(),
+      panel.grid=element_blank(),
+      axis.ticks = element_blank(),
+      plot.title=element_text(size=14, face="bold"),
+      axis.text.x=element_blank()
+    )
+  chart <- ggplot(port, aes("", returns, fill = etf)) +
+    geom_bar(width = 1, size = 0.5, color = "black", stat = "identity") +
+    coord_polar("y") +
+    blank_theme +
+    guides(fill=guide_legend("Composition", reverse=T)) +
+    scale_fill_manual(values=c("#e3f2fd","#bbdefb","#90caf9","#64b5f6",
+                               "#2196f3","#1e88e5","#1976d2","#1565c0","#0d47a1","#183e77", "#000066"))
+  return(chart)
+}
+pie_midRisk(m)
+
+table.mid <- as.data.frame(cbind(paste(round(info_matrix[m,"mu"]*100,2), "%"),
+                                 paste(round(info_matrix[m,"Cov"]*100,2), "%"),
+                                 signif((info_matrix[m,"mu"]-Rf)/info_matrix[m,"Cov"],3)))
+colnames(table.mid) <- c("Returns","Risks", "Sharpe Ratio")
+rownames(table.mid) <- NULL
+
+
+kable(list(table.mid, exposures(m)))
+```
+
+## Hisogram of Mid Risk Yearly Return
+```{r mid risk return histo}
+mid_whole <- window(backtestReturns$mid)
+
+names(mid_whole) <- "Mid Risk Yearly Return Distribution"
+mid_whole_percentage = mid_whole*100
+chart.Histogram(mid_whole_percentage, methods = c("add.density", "add.normal"), breaks = seq(-15,22,2),xlim=c(-15,22),ylim=c(0,0.1),xlab = "Returns(%)")
+
+```
+
+## High Risk Portfolio
+
+```{r high risk pie, fig.width=5, fig.height=2}
+pie_highRisk <- function(p) {
+  port <- data.frame(
+    etf = ETFs,
+    returns = round(weighted_matrix[p,]*100,2)
+  )
+  port <- arrange(port, desc(returns))
+  slice <- c()
+  for(i in 1:nrow(port)) {
+    if (port[i,"returns"] == 0) {
+      slice <- c(slice,i)
+    }
+  }
+  port <- slice(port, -slice)
+  port$etf <- paste(port$etf, "+", port$returns, "%")
+  port$etf <- factor(port$etf, levels = rev(as.character(port$etf)))
+  
+  blank_theme <- theme_minimal() + 
+    theme(
+      axis.title.x = element_blank(),
+      axis.title.y = element_blank(),
+      panel.border = element_blank(),
+      panel.grid=element_blank(),
+      axis.ticks = element_blank(),
+      plot.title=element_text(size=14, face="bold"),
+      axis.text.x=element_blank()
+    )
+  chart <- ggplot(port, aes("", returns, fill = etf)) +
+    geom_bar(width = 1, size = 0.5, color = "black", stat = "identity") +
+    coord_polar("y") +
+    blank_theme +
+    guides(fill=guide_legend("Composition", reverse=T)) +
+    scale_fill_manual(values=c("#ffcccc","#ff9999","#ff3333",
+                               "#cc0000","#990000","#660000","#330000"))
+  return(chart)
+}
+
+pie_highRisk(h)
+table.high <- as.data.frame(cbind(paste(round(info_matrix[h,"mu"]*100,2), "%"),
+                                  paste(round(info_matrix[h,"Cov"]*100,2), "%"),
+                                  signif((info_matrix[h,"mu"]-Rf)/info_matrix[h,"Cov"],3)))
+colnames(table.high) <- c("Returns","Risks","Sharpe Ratio")
+rownames(table.high) <- NULL
+
+kable(list(table.high, exposures(h)))
+```
+
+## Histogram of High Risk Yearly Return
+```{r high risk return histo}
+
+high_whole <- window(backtestReturns$high)
+names(high_whole) <- "High Risk Yearly Return Distribution"
+high_whole_percentage <- high_whole*100
+chart.Histogram(high_whole_percentage , methods = c("add.density", "add.normal"),breaks = seq(-25,30,3),xlim=c(-25,30),ylim=c(0,0.1),xlab = "Returns(%)")
+
+```
+
+
+## Equal Weights Portfolio
+```{r equal weight portfolio, fig.width=5, fig.height=2}
+pie_equal <- function(p) {
+  port <- data.frame(
+    etf = ETFs,
+    returns = round(1/p*100,2)
+  )
+  
+  port$etf <- paste(port$etf, "+", port$returns, "%")
+  port$etf <- factor(port$etf, levels = rev(as.character(port$etf)))
+  
+  blank_theme <- theme_minimal() + 
+    theme(
+      axis.title.x = element_blank(),
+      axis.title.y = element_blank(),
+      panel.border = element_blank(),
+      panel.grid=element_blank(),
+      axis.ticks = element_blank(),
+      plot.title=element_text(size=14, face="bold"),
+      axis.text.x=element_blank()
+    )
+  chart <- ggplot(port, aes("", returns, fill = etf)) +
+    geom_bar(width = 1, size = 0.5, color = "black", stat = "identity") +
+    coord_polar("y") +
+    blank_theme +
+    guides(fill=guide_legend("Composition", reverse=T)) +
+    scale_fill_manual(values=c("#BABABA","#BABABA","#BABABA","#BABABA","#BABABA",
+                               "#BABABA","#BABABA","#BABABA","#BABABA","#BABABA",
+                               "#BABABA","#BABABA","#BABABA","#BABABA","#BABABA"))
+  return(chart)
+}
+
+
+
+# Calculating mu for equal weight portfolio
+equal_mu <- 0
+cov_index <- 99
+for (i in agg_mu) {
+  equal_mu = equal_mu + (i*1/length(ETFs))
+}
+
+table.equal <- as.data.frame(cbind(paste(round(equal_mu*100,2), "%"),
+                                  paste(round(info_matrix[cov_index,"Cov"]*100,2), "%"),
+                                  signif((equal_mu-Rf)/info_matrix[cov_index,"Cov"],3)))
+
+colnames(table.equal) <- c("Returns","Risks","Sharpe Ratio")
+rownames(table.equal) <- NULL
+
+equal_exposures <- data.frame("USD"=c(paste(round((13/15)*100,1),"%")),
+                    "JPY"=c(paste(round((2/15)*100,1),"%")),
+                    "Fixed Income"=c(paste(round((5/15)*100,1),"%")),
+                    "REIT"=c(paste(round((3/15)*100,1),"%")),
+                    "Equity"=c(paste(round((5/15)*100,1),"%")),
+                    "Comodity "=c(paste(round((2/15)*100,1),"%")))
+
+kable(list(table.equal, equal_exposures))
+
+```
+
+## Histogram of Equal Weightage Yearly Return
+```{r equal weights return histo}
+
+equal_whole <- window(backtestReturns$equal)
+names(equal_whole) <- "Equal Weightage Yearly Return Distribution"
+equal_whole_percentage <- equal_whole*100
+chart.Histogram(equal_whole_percentage , methods = c("add.density", "add.normal"),breaks = seq(-30,30,3),xlim=c(-30,30),ylim=c(0,0.1),xlab = "Returns(%)")
+
+```
+
+## Performance of Portfolios Overtime (Monthly)
+
+```{r backtest}
+p <-ggplot(backtest.data_monthly, aes(date)) +
+  geom_line(aes(y=low, colour="Low Risk")) +
+  geom_line(aes(y=mid, colour="Mid Risk")) +
+  geom_line(aes(y=high, colour="High Risk")) +
+  geom_line(aes(y=equal, colour="Equal Weight")) +
+  scale_color_manual(name = "Portfolio Risk",
+  values = c( "Low Risk" = "darkolivegreen3", "Mid Risk" = "deepskyblue1", "High Risk" = "red", "Equal Weight" = "dimgray"),
+  labels = c("Low Risk", "Mid Risk", "High Risk", "Equal Weight")) +
+  xlab("Date") + ylab("Cumulative Return")
+
+#show result
+p
+```
+
+
+# Appendix
+
+## Label plot for all the choosen ETFs
+```{r label plot}
+
+return_table_3 <- NULL
+for (i in 2:16){
+  return_table_3 <- cbind(return_table_3, xts::xts(etf_returns[,i], order.by = as.Date(etf_returns$x), dateFormat="POSIXct"))
+}
+colnames(return_table_3) <- c("AGG", "SCHP", "VCSH", "BNDX","VWOB", "1306.T","VOO",  "VSS", "VGK", "VWO", "1343.T","VNQ", "VNQI", "IAU", "BCI")
+#head(return_table)
+
+return_3 <-  return_table_3
+
+xts_return_3 <- xts(return_3)
+xts_monthly_return_3 <- apply.monthly(xts_return_3, mean)
+plot_returns <- xts(xts_monthly_return_3)
+backtestPortfolios <- plot_returns[,c(1:15)]
+backtestPortfolios <- backtestPortfolios *100
+
+Portfolio_table <- as.data.frame(table.AnnualizedReturns(backtestPortfolios), Rf = 0.01)
+Portfolio_table <- rownames_to_column(Portfolio_table)
+names(Portfolio_table)[1] <- 'Performance'
+
+
+Portfolio_df <- Portfolio_table %>% gather(key = 'Code', value = 'Values', -Performance) %>% spread(key = Performance, value = Values) %>%
+                            rename('Annualized_Return' = 'Annualized Return', 'Annualized_Sharpe' = 'Annualized Sharpe (Rf=0%)','Annualized_StdDev' = 'Annualized Std Dev' ) %>%
+                            select(Code,Annualized_Return, Annualized_StdDev, Annualized_Sharpe)
+
+Portfolio_df %>% ggplot(aes(y = Annualized_Return, x = Annualized_StdDev)) + geom_rect(aes(xmin = -Inf, xmax= Inf), ymin = 0.01, ymax= Inf, fill = '#56FF3B', alpha = 0.01) + 
+                              geom_rect(aes(xmin = -Inf, xmax= Inf), ymin = -Inf, ymax= 0.01, fill = '#FF0000', alpha = 0.01) +
+                              geom_hline(aes(yintercept = 0.01)) + geom_label(label = Portfolio_df$Code, size = 2) + annotate(geom ='text', x=0.3, y=0.05, label ='Risk-Free Rate Return (1%)', size = 4.5) + theme_bw() + 
+                              xlab('RISK (Std Dev)') + ylab('RETURN') + ggtitle('Overall Portfolio Performance vs Risk-Free Rate Asset') +
+                              theme(axis.text = element_text(size = 14), plot.title = element_text(size =20, hjust = 0.5), axis.title = element_text(size = 16))
+```
+
+## Methodology 1/2
+
+1. Identification of suitable ETFs for examination
+    + Identify ETFs such as Bonds, REITs, Equities, Gold/Commodities to ensure a diversification of portfolio allocation to minimize risk
+    + Omit ETFs that are highly correlated or have similar portfolio composition 
+2. Gathering of relevant statistics for ETFs and market
+    + Compute yearly and monthly return of each ETF (source: ETFfxreturns.xlxs)
+    + Compute $R{m}$ for market (source: ETFfxreturns.xlxs)
+    + Obtain ETF composition (source: Yahoo Finance)
+      + Converted all Net Assets into USD
+    + Compute standard deviation for each ETF
+
+## Methodology 2/2
+
+3. Perform CAPM(TS) Regression for each ETF
+    + Obtain $\beta_{i}$ from regression coefficient
+      + CAPM regression: $R^*_{i, t} = \alpha_{i} + \beta_{i}R^*_{m,t}$ 
+    + Compute $\mu_{i}$
+      + Using $R_{f}$ = 0.01
+      + $\mu_{i} = E(R_{i,t}) = R_{f} + \beta_{i}E(R^*_{m,t})$
+    + Compute Aggregated $\mu$ using $\mu_{i}$ and Aggregation of historical mean
+      + $\mu_{aggregated} = \frac{2}{3}\mu_{i} + \frac{1}{3}\mu_{hist}$
+4. Obtain portfolio weights 
+    + Generate efficient frontier
+    + Modified constraints to take in $\mu_{aggregated}$ 
+    + Select Low, Mid, High risk portfolio from the efficient frontier
+5. Back-test to observe portfolio performance
+    + Included Equal Weight portfolio as benchmark for comparison
+
+## Correlation Matrix
+
+```{r correlation matrix}
+cor_matrix <- round(cor,2)
+ggcorrplot(cor_matrix, hc.order = TRUE, type = "lower",
+   lab = TRUE)
+```
+
+## Correlation between VOO and VO
+
+```{r justification}
+justification_matrix <- NULL
+justification_matrix <- cbind(justification_matrix, Ad(to.daily(getSymbols("VOO", auto.assign=FALSE, from="2001-10-01", src='yahoo'))))
+justification_matrix <- cbind(justification_matrix, Ad(to.daily(getSymbols("VO", auto.assign=FALSE, from="2001-10-01", src='yahoo'))))
+colnames(justification_matrix) <- c("VOO","VO")
+justification_matrix_ts <- xts(justification_matrix)
+justification_matrix_return <-  Return.calculate(justification_matrix_ts[, 1:2])[-1]
+cor2 <- cor(justification_matrix_return,use="pairwise.complete.obs")
+kable(cor2) %>% kable_styling(latex_options = "scale_down")
+```
+- Omit VO
+    + VO was omitted due to high correlation with VOO even though it is one of the given ETFs in the execl
+    + VO's Holding is also very similar with VOO
+    
